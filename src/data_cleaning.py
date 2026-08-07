@@ -25,14 +25,12 @@ ACRONYMS = ["USB", "HDMI", "LED", "SSD", "TV"]
 # Prompt comment used: "read a CSV into a DataFrame, treat blank/NA-looking
 # cells as missing, and print how many rows and columns were loaded"
 def load_data(file_path: str) -> pd.DataFrame:
-    """Load the raw sales CSV and report its shape."""
+    """Load the raw CSV into a DataFrame and report its shape."""
     # skipinitialspace=True is needed because this export writes ', "USB Cable"'
-    # with a space after every comma, which otherwise ends up inside the value.
-    df = pd.read_csv(
-        file_path,
-        skipinitialspace=True,
-        na_values=["", " ", "NA", "N/A", "null"],
-    )
+    # with a space after every comma, which otherwise leaves the quote marks
+    # inside the value and makes "Electronics" and " Electronics" two categories.
+    df = pd.read_csv(file_path,skipinitialspace=True,na_values=["", " ", "NA", "N/A", "null"])
+
     print(f"Loaded {len(df)} rows and {len(df.columns)} columns from {file_path}")
     return df
 
@@ -41,21 +39,22 @@ def load_data(file_path: str) -> pd.DataFrame:
 # Prompt comment used: "standardize dataframe column names to lowercase with
 # underscores and no surrounding whitespace"
 def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize headers, then rename the cryptic ones to readable names."""
+    """Make column names lowercase, underscore-separated, and whitespace-free."""
     df = df.copy()
 
-    # WHAT: lowercase every header, trim padding, and replace inner spaces with
-    # underscores. WHY: the raw headers are "ProdName ", "CATEGORY ", "  date_sold ",
-    # so column access is unpredictable until they follow one convention.
+    # WHAT: lowercase every header, trim the padding, and collapse any run of
+    # whitespace into a single underscore.
+    # WHY: the raw headers are "ProdName ", " CATEGORY ", "   date_sold ", so
+    # column access is unpredictable until they all follow one convention.
     df.columns = (
         df.columns.str.strip()
         .str.lower()
         .str.replace(r"\s+", "_", regex=True)
     )
 
-    # WHAT: give abbreviated columns full names.
-    # WHY: "prodname" and "qty" are shorthand only the original system understands;
-    # anyone reading the cleaned file should not have to guess.
+    # WHAT: give the abbreviated columns full names.
+    # WHY: "prodname" and "qty" are shorthand only the exporting system
+    # understands, and every later step in this script refers to the full names.
     df = df.rename(columns={"prodname": "product_name", "qty": "quantity"})
 
     print(f"Standardized column names: {list(df.columns)}")
@@ -116,68 +115,64 @@ def clean_date_column(df: pd.DataFrame) -> pd.DataFrame:
 # Prompt comment used: "convert price and quantity to numeric and drop the rows
 # where either one is missing, printing how many rows were removed"
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
-    """Force price/quantity to numbers and drop rows where either is missing."""
+    """Drop rows with missing price or quantity, and report how many."""
+    df = df.copy()
+        # WHAT: run the text and date cleanup before anything else.
+    # WHY: those steps normalize product_name and category and parse date_sold.
+    # Skipping them leaves "Desk Chair" and "Desk  Chair" as two products.
     df = clean_text_columns(df)
     df = clean_date_column(df)
 
     rows_before = len(df)
 
-    # WHAT: coerce price and quantity to numeric types.
-    # WHY: they load as text because of the surrounding spaces and blank cells.
-    # Comparing " -1 " to zero would never flag the bad row; comparing -1 does.
-    for column in ["price", "quantity"]:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+    # WHAT: convert price and quantity to numeric, coercing errors to NaN.
+    # WHY: the blank cells and the spaces around every value make pandas read
+    # both columns as text. Comparing " -1 " to zero would never flag the bad
+    # row; comparing -1 does.
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
 
-    # WHAT: drop rows missing a price or a quantity instead of filling them.
-    # WHY: one consistent policy, and for sales records it is the honest one.
-    # A filled-in mean price or a quantity of 0 would invent revenue that never
-    # happened, and only a handful of rows are affected.
+    # WHAT: drop any row where price or quantity is NaN.
+    # WHY: a sale with no price or no quantity is not a real sale, so it should
+    # not be counted in revenue totals.
     df = df.dropna(subset=["price", "quantity"])
+    missing_removed = rows_before - len(df)
 
     # WHAT: store quantity as a whole number.
     # WHY: units sold are countable; "3.0 units" is noise in the output file.
     df["quantity"] = df["quantity"].astype(int)
 
-    print(f"Dropped {rows_before - len(df)} row(s) with a missing price or quantity")
+    print(f"Removed {missing_removed} row(s) with missing price or quantity")
     return df
+
+
 
 
 # Copilot-assisted function.
-# Prompt comment used: "remove rows with negative or zero price or quantity,
-# drop duplicate sales rows, and reset the index"
+# Prompt comment used: "remove invalid rows and duplicates from the sales data"
 def remove_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop impossible sales values and exact duplicate records."""
+    """Drop rows with a non-positive price or quantity, and remove duplicates."""
     df = df.copy()
     rows_before = len(df)
 
-    # WHAT: keep only rows where price is greater than zero.
-    # WHY: a negative price (-6.25 on the stapler row) and a 0.00 price (the
-    # laptop stand) are both data entry errors, not real sales. Zero is treated
-    # the same as negative here because it is the placeholder this system writes
-    # when the cashier skipped the field.
-    df = df[df["price"] > 0]
-
-    # WHAT: keep only rows where quantity is greater than zero.
-    # WHY: negative quantities are returns or typos recorded in the sales table,
-    # and a quantity of 0 is not a transaction at all. Either one would drag the
-    # revenue totals off.
-    df = df[df["quantity"] > 0]
-
+    # WHAT: keep only rows where price and quantity are greater than zero.
+    # WHY: negative values are clearly data entry errors, but zero has to go
+    # too. The 0.00 price on the laptop stand is the placeholder this system
+    # writes when the cashier skips the field, not a free item, and a quantity
+    # of 0 is not a transaction. Both would survive a >= 0 filter.
+    df = df[(df["price"] > 0) & (df["quantity"] > 0)]
     invalid_removed = rows_before - len(df)
 
-    # WHAT: drop rows that are identical across every column.
-    # WHY: the pen set sale was exported twice. After the text columns were
-    # normalized these repeats line up exactly, so they can be caught now.
-    df = df.drop_duplicates()
+    # WHAT: drop duplicate rows based on all columns, then renumber.
+    # WHY: the raw export has some rows entered twice. Keeping them would
+    # double-count the revenue for those sales. Resetting the index afterwards
+    # stops the surviving rows from looking like data is missing.
+    df = df.drop_duplicates().reset_index(drop=True)
     duplicates_removed = rows_before - invalid_removed - len(df)
 
-    # WHAT: renumber the index after all the dropping.
-    # WHY: the surviving rows keep their original gap-filled index otherwise,
-    # which looks like data is missing from the cleaned file.
-    df = df.reset_index(drop=True)
 
-    print(f"Removed {invalid_removed} invalid row(s) and {duplicates_removed} duplicate row(s)")
-    return df
+    print(f"Removed {invalid_removed} invalid row(s) and {duplicates_removed} duplicate(s)")
+    return df 
 
 
 if __name__ == "__main__":
