@@ -1,0 +1,193 @@
+"""
+data_cleaning.py
+----------------
+Purpose: Turn the messy raw sales export (data/raw/sales_data_raw.csv) into a
+tidy, analysis-ready file (data/processed/sales_data_clean.csv).
+
+The raw export came out of a point-of-sale system and has the usual problems:
+inconsistent column headers, padded whitespace inside quoted text, blank price
+and quantity cells, negative numbers where negatives make no sense, and rows
+that were entered twice. Every fix below happens in code so the raw file stays
+untouched and the whole cleanup can be re-run and audited.
+
+Run from the project root:
+    python src/data_cleaning.py
+"""
+
+import pandas as pd
+
+# Acronyms that title case would otherwise flatten into "Usb", "Hdmi", etc.
+# Kept as a named constant so the list is easy to extend as the catalog grows.
+ACRONYMS = ["USB", "HDMI", "LED", "SSD", "TV"]
+
+
+# Copilot-assisted function.
+# Prompt comment used: "read a CSV into a DataFrame, treat blank/NA-looking
+# cells as missing, and print how many rows and columns were loaded"
+def load_data(file_path: str) -> pd.DataFrame:
+    """Load the raw sales CSV and report its shape."""
+    # skipinitialspace=True is needed because this export writes ', "USB Cable"'
+    # with a space after every comma, which otherwise ends up inside the value.
+    df = pd.read_csv(
+        file_path,
+        skipinitialspace=True,
+        na_values=["", " ", "NA", "N/A", "null"],
+    )
+    print(f"Loaded {len(df)} rows and {len(df.columns)} columns from {file_path}")
+    return df
+
+
+# Copilot-assisted function.
+# Prompt comment used: "standardize dataframe column names to lowercase with
+# underscores and no surrounding whitespace"
+def clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize headers, then rename the cryptic ones to readable names."""
+    df = df.copy()
+
+    # WHAT: lowercase every header, trim padding, and replace inner spaces with
+    # underscores. WHY: the raw headers are "ProdName ", "CATEGORY ", "  date_sold ",
+    # so column access is unpredictable until they follow one convention.
+    df.columns = (
+        df.columns.str.strip()
+        .str.lower()
+        .str.replace(r"\s+", "_", regex=True)
+    )
+
+    # WHAT: give abbreviated columns full names.
+    # WHY: "prodname" and "qty" are shorthand only the original system understands;
+    # anyone reading the cleaned file should not have to guess.
+    df = df.rename(columns={"prodname": "product_name", "qty": "quantity"})
+
+    print(f"Standardized column names: {list(df.columns)}")
+    return df
+
+
+def clean_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Trim and normalize the free-text product and category columns."""
+    df = df.copy()
+
+    for column in ["product_name", "category"]:
+        # WHAT: strip the padding, squeeze repeated inner spaces down to one,
+        # and apply title case.
+        # WHY: the raw file holds "USB Cable", "usb cable", " electronics ", and
+        # "Laptop  Stand" as separate values. They are the same product and the
+        # same category, so without this step every later grouping or duplicate
+        # check counts them twice.
+        df[column] = (
+            df[column]
+            .astype("string")
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+            .str.title()
+        )
+
+        # WHAT: put product acronyms back in uppercase after title casing.
+        # WHY: .str.title() turns "USB Cable" into "Usb Cable". Title case is
+        # still the right default for the rest of the catalog, so the acronyms
+        # get restored instead of dropping the rule entirely.
+        for acronym in ACRONYMS:
+            df[column] = df[column].str.replace(
+                rf"\b{acronym.title()}\b", acronym, regex=True
+            )
+
+    return df
+
+
+def clean_date_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse date_sold into real dates instead of padded strings."""
+    df = df.copy()
+
+    # WHAT: convert date_sold to datetime; anything unparseable becomes NaT.
+    # WHY: the column arrives as text with stray spaces and one blank cell, so
+    # sorting or filtering by date would be alphabetical rather than
+    # chronological. Rows with a missing date are kept — the sale itself is
+    # still valid, only the timestamp is unknown.
+    df["date_sold"] = pd.to_datetime(df["date_sold"].astype("string").str.strip(),
+                                     errors="coerce")
+
+    missing_dates = int(df["date_sold"].isna().sum())
+    if missing_dates:
+        print(f"Note: {missing_dates} row(s) have no sale date; keeping them.")
+
+    return df
+
+
+# Copilot-assisted function.
+# Prompt comment used: "convert price and quantity to numeric and drop the rows
+# where either one is missing, printing how many rows were removed"
+def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Force price/quantity to numbers and drop rows where either is missing."""
+    df = clean_text_columns(df)
+    df = clean_date_column(df)
+
+    rows_before = len(df)
+
+    # WHAT: coerce price and quantity to numeric types.
+    # WHY: they load as text because of the surrounding spaces and blank cells.
+    # Comparing " -1 " to zero would never flag the bad row; comparing -1 does.
+    for column in ["price", "quantity"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    # WHAT: drop rows missing a price or a quantity instead of filling them.
+    # WHY: one consistent policy, and for sales records it is the honest one.
+    # A filled-in mean price or a quantity of 0 would invent revenue that never
+    # happened, and only a handful of rows are affected.
+    df = df.dropna(subset=["price", "quantity"])
+
+    # WHAT: store quantity as a whole number.
+    # WHY: units sold are countable; "3.0 units" is noise in the output file.
+    df["quantity"] = df["quantity"].astype(int)
+
+    print(f"Dropped {rows_before - len(df)} row(s) with a missing price or quantity")
+    return df
+
+
+# Copilot-assisted function.
+# Prompt comment used: "remove rows with negative or zero price or quantity,
+# drop duplicate sales rows, and reset the index"
+def remove_invalid_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop impossible sales values and exact duplicate records."""
+    df = df.copy()
+    rows_before = len(df)
+
+    # WHAT: keep only rows where price is greater than zero.
+    # WHY: a negative price (-6.25 on the stapler row) and a 0.00 price (the
+    # laptop stand) are both data entry errors, not real sales. Zero is treated
+    # the same as negative here because it is the placeholder this system writes
+    # when the cashier skipped the field.
+    df = df[df["price"] > 0]
+
+    # WHAT: keep only rows where quantity is greater than zero.
+    # WHY: negative quantities are returns or typos recorded in the sales table,
+    # and a quantity of 0 is not a transaction at all. Either one would drag the
+    # revenue totals off.
+    df = df[df["quantity"] > 0]
+
+    invalid_removed = rows_before - len(df)
+
+    # WHAT: drop rows that are identical across every column.
+    # WHY: the pen set sale was exported twice. After the text columns were
+    # normalized these repeats line up exactly, so they can be caught now.
+    df = df.drop_duplicates()
+    duplicates_removed = rows_before - invalid_removed - len(df)
+
+    # WHAT: renumber the index after all the dropping.
+    # WHY: the surviving rows keep their original gap-filled index otherwise,
+    # which looks like data is missing from the cleaned file.
+    df = df.reset_index(drop=True)
+
+    print(f"Removed {invalid_removed} invalid row(s) and {duplicates_removed} duplicate row(s)")
+    return df
+
+
+if __name__ == "__main__":
+    raw_path = "data/raw/sales_data_raw.csv"
+    cleaned_path = "data/processed/sales_data_clean.csv"
+
+    df_raw = load_data(raw_path)
+    df_clean = clean_column_names(df_raw)
+    df_clean = handle_missing_values(df_clean)
+    df_clean = remove_invalid_rows(df_clean)
+    df_clean.to_csv(cleaned_path, index=False)
+    print("Cleaning complete. First few rows:")
+    print(df_clean.head())
