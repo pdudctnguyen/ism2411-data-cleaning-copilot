@@ -2,109 +2,109 @@
 
 ## What Copilot generated
 
-Four functions in `src/data_cleaning.py` started as Copilot suggestions:
+Four of the functions in `src/data_cleaning.py` started as Copilot suggestions:
 `load_data`, `clean_column_names`, `handle_missing_values` and
-`remove_invalid_rows`. I prompted it the same way every time — I wrote a comment
-describing what the function should do, then the `def` line with a type hint,
-then put the cursor on an indented blank line and waited for the ghost text. The
-prompt comment I used is still sitting above each of those functions in the file.
-Before accepting anything I cycled through the alternatives with `Option + ]`,
-and that turned out to be worth doing for a reason I did not expect: the
-alternatives are mostly not alternatives. For `load_data`, suggestion #2 was
-nothing but a docstring restating my own comment back to me, and suggestion #3
-was character-for-character identical to #1. For `clean_column_names` the toolbar
-said `1/3`, and all three were the same code with a couple of words changed in
-the inline comments. Three choices, one idea.
-
-Where Copilot was genuinely good was syntax and local detail. It knew
-`pd.to_numeric(..., errors="coerce")` and `dropna(subset=[...])` without me
-looking anything up, it picked `na_values` out of the phrase "NA-looking cells"
-in my comment, and in `clean_column_names` it added an explanatory comment to
-every line of the method chain without being asked. In `handle_missing_values` it
-even matched the `# WHAT:` / `# WHY:` comment style used elsewhere in the file —
-though it did not do that in `clean_column_names`, where it also silently
-dropped the `print` line that every other function in the file has. It reads the
-surrounding file, but not consistently.
+`remove_invalid_rows`. I used the same method for all four. I wrote a comment
+saying what the function should do, then the `def` line with a type hint, then
+put my cursor on an indented blank line and waited for the gray text to appear.
+The comment I used is still in the file above each function so you can see what I
+asked for. Before hitting Tab I pressed `Option + ]` to look at the other
+suggestions, and that was the first thing that surprised me. Most of the time
+they were not really different. For `load_data`, the second suggestion was just a
+docstring repeating my own comment back at me with no code at all, and the third
+one was exactly the same as the first. For `clean_column_names`, all three
+suggestions were the same code with only a few words changed in the comments.
+Copilot was good at the parts I would have had to look up. It knew
+`pd.to_numeric(..., errors="coerce")` and `dropna(subset=[...])` right away, and
+it noticed the words "NA-looking cells" in my comment and added a `na_values`
+argument because of it. In `clean_column_names` it put a short comment on every
+line of the chain without me asking. In `handle_missing_values` it even copied
+the `# WHAT:` / `# WHY:` comment style I was using in the rest of the file. It
+did not do that in `clean_column_names` though, and there it also left out the
+`print` line that every other function in my file has, so I am not sure how much
+it really looks at the rest of the file.
 
 ## What I modified
 
-The change that taught me the most was in `load_data`. Copilot generated a plain
-`pd.read_csv(file_path, na_values=["", "NA", "N/A"])`. I accepted it, ran the
-script, and it worked — no error, and exactly 11 rows in the output, the same
-count the corrected version produces. The damage was inside the data. Because
-this export puts a space after every comma, the quote character is no longer the
-first character of the field, so pandas treats it as ordinary text instead of
-quoting. Every category came out as `"Electronics"` and `" Electronics"` with the
-quote marks baked in, which made 7 distinct categories out of 5. The
-`product_name` column escaped this because it is the first column, where the
-quote does sit at the start of the field — same file, same data type, same
-cleaning code, different result. `.str.strip()` could not repair it either, since
-it only removes whitespace and the leading character here was `"`. Adding
-`skipinitialspace=True` fixed all of it.
+The change I learned the most from was in `load_data`. Copilot wrote
+`pd.read_csv(file_path, na_values=["", "NA", "N/A"])`. I accepted it and ran the
+script and nothing went wrong. No error, and a preview that looked normal at a
+glance. The only reason I looked closer is that the category column in that
+preview still had quote marks around every value. This CSV has a space after
+every comma, so the quote mark is not the first character of the field anymore
+and pandas stops treating it as a quote. Every category came out looking like
+`"Electronics"` and `" Electronics"` with the quote marks still attached, so
+counting them gave me 7 categories when the raw file only has 5. What confused me
+for a while is that `product_name` was totally fine. It turns out that column is
+first in the row, so its quote really is at the start and pandas handles it the
+normal way. The same code gave me a different result just because of where the
+column sits. I also assumed `.str.strip()` would clean it up later, but strip
+only removes spaces and the first character here was a quote mark. Adding
+`skipinitialspace=True` fixed it.
 
-`clean_column_names` failed the opposite way. Copilot's chain of
-`.str.strip().str.lower().str.replace(" ", "_")` was correct as far as it went,
-but it stopped there — no `.rename()` turning `prodname` into `product_name` and
-`qty` into `quantity`. My prompt comment only said "standardize", so that is
-exactly what I got. The script crashed on the next function with
-`KeyError: 'product_name'`. I also swapped the literal replace for
-`.str.replace(r"\s+", "_", regex=True)`; on a header like `Order  Date` Copilot's
-version produces `order__date` and the regex version produces `order_date`. This
-dataset has no such header, so that weakness would never have shown up here. In
-`handle_missing_values` the missing piece was two calls to my own helper
-functions sitting directly above it in the same file. Without them the text
-normalization never ran, and the cleaned file ended up with 11 distinct product
-names across 11 rows — a sales table that looks like no product ever sold twice,
-because `Desk Chair` and `Desk  Chair` were counted separately. Again, no error.
-That same function also came with a confident WHY comment claiming "the raw
-export has a few cells with text in them." I opened the raw CSV to check, and
-there is no text in the price or quantity columns at all — only blank cells. The
-code was right and the explanation of it was wrong, which is the kind of comment
-someone would later trust.
+`clean_column_names` broke in the opposite way. The chain Copilot wrote,
+`.str.strip().str.lower().str.replace(" ", "_")`, was fine, but it stopped there
+and never renamed `prodname` to `product_name` or `qty` to `quantity`. My comment
+only said "standardize", so that is all I got, and the script crashed on the next
+function with `KeyError: 'product_name'`. I also changed the replace to
+`.str.replace(r"\s+", "_", regex=True)`. I tested both on a made-up header
+`Order  Date` with two spaces: Copilot's version gives `order__date` with two
+underscores and the regex version gives `order_date`. My file does not have a
+header like that, so I never would have seen this by just running the script.
+For `handle_missing_values`, what was missing was two calls to my own helper
+functions that are written right above it in the same file. Without them the text
+cleaning never ran, and my "clean" file ended up with 11 different product names
+in 11 rows, because `Desk Chair` and `Desk  Chair` were counted as two products.
+It looked like nothing in the store had ever sold twice. There was no error
+message. That same function also came with a comment saying "the raw export has a
+few cells with text in them," so I opened the raw CSV to check and there is no
+text in the price or quantity columns at all, only empty cells. The code was
+right but the reason it gave was made up.
 
-I made one methodology mistake worth recording. For `handle_missing_values` and
-my first pass at `remove_invalid_rows`, my prompt comments already contained the
-answer — one said "drop the rows where either one is missing," the other said
-"remove rows with negative **or zero** price or quantity, and reset the index."
-Copilot produced `dropna` and `> 0` and I briefly took that as evidence it
-understood the data. It was not; it was following instructions I had written.
-I rewrote the prompt to a neutral "remove invalid rows and duplicates from the
-sales data" and triggered it again, and the suggestion changed to
-`df[(df["price"] >= 0) & (df["quantity"] >= 0)]` with no `reset_index` at all.
-Left to its own reading of the word "invalid", Copilot means *negative*. It has
-no way to know that the `0.00` price on the laptop stand is the placeholder this
-system writes when a cashier skips the field rather than a free item, or that a
-quantity of `0` is not a transaction. That knowledge only exists for someone who
-has opened the raw file and looked. Dropping `reset_index` when I stopped asking
-for it also confirmed a pattern from `clean_column_names`: whatever the prompt
-leaves out, the code leaves out.
+I also made a mistake in how I was testing this, and I think it is worth writing
+down. For `handle_missing_values` and my first try at `remove_invalid_rows`, my
+prompt comments already gave away the answer. One of them said "drop the rows
+where either one is missing" and the other said "remove rows with negative or
+zero price or quantity, and reset the index." Copilot gave me `dropna` and `> 0`
+and for a minute I thought that meant it understood my data. It did not. It was
+just doing what I told it. So I rewrote the comment to something neutral,
+"remove invalid rows and duplicates from the sales data," and triggered it again.
+This time it wrote `df[(df["price"] >= 0) & (df["quantity"] >= 0)]` and dropped
+`reset_index` completely. So when Copilot decides for itself what "invalid"
+means, it means negative. It has no way of knowing that the `0.00` price on the
+laptop stand is what the system puts there when the cashier skips the field, or
+that selling 0 of something is not a sale. You only know that if you open the raw
+file and look at it. Losing `reset_index` as soon as I stopped asking for it was
+the same thing that happened in `clean_column_names`. If I leave something out of
+the comment, it gets left out of the code.
 
 ## What I learned
 
-The single most useful thing I learned is that my instinct for how to verify a
-cleaning script was wrong. Three of the four broken versions produced **exactly
-11 rows**, with progress messages identical word for word to the correct run —
-row count could not distinguish them at all. What exposed those was counting
-distinct values per column: 7 categories instead of 5, 11 product names instead
-of 9. Then the fourth one inverted it. The `>= 0` filter let two rows through and
-the output jumped to 13 rows, so row count caught it immediately — but total
-revenue came to `889.32` in **both** versions, because a row priced `0.00` and a
-row with quantity `0` each multiply out to nothing. A revenue check would have
-passed cleanly while the transaction count was off by two, which is enough to
-report average order value as `$68.41` instead of `$80.85`, a 15% error sitting
-behind a revenue total that reconciles perfectly. No single check caught
-everything, and I could not have known in advance which check I needed, because
-that depends on the bug.
-
-On Copilot specifically: every suggestion it made was valid Python, and none of
-the ones I had to fix were wrong about pandas. They were wrong about *this
-dataset* — about what a space after a comma does to this particular export, about
-what `0.00` means to whoever entered it, about which helper functions already
-existed twenty lines up in the file. Its confidence is also flat: the invented
-justification about "cells with text" is written in exactly the same steady tone
-as the argument about revenue totals that was completely correct, so tone gives
-me nothing to go on. What I would take into the next project is that the prompt
-comment is doing more work than I realized — it is not a hint, it is the spec,
-and Copilot will fill in nothing I forget to ask for and change its answer when
-I change the wording. Reviewing what it wrote is not the last step of using it.
-It is the whole job.
+The biggest thing I learned is that I was checking my work the wrong way. My
+whole idea of "did that work" was to look at the row count and the messages
+printed to the terminal. Three of the four bugs above changed neither one. The
+script said 11 rows before I fixed it and 11 rows after, with the same progress
+messages word for word, so I could have signed off on any of them. What actually
+caught them was counting how many different values ended up in each column and
+comparing that against the raw CSV: 7 categories when the file only has 5, and 11
+different product names in 11 rows when several of those products clearly show up
+more than once. Then the fourth bug went the other way. The `>= 0` filter let two
+rows through and the output jumped to 13 rows, so this time the row count caught
+it right away. But the revenue total came to `889.32` before the fix and `889.32`
+after it, because a row priced `0.00` and a row with quantity `0` both multiply
+out to nothing. A revenue check would have looked perfect while there were two
+fake transactions sitting in the file. If someone used it to work out average
+order value they would get `$68.41` instead of `$80.85`, and the revenue total
+would still add up exactly. Every check I tried caught some things and missed
+others, and I had no way of knowing in advance which one I was going to need.
+The other thing I learned is that none of the mistakes I had to fix were mistakes
+about pandas. Everything Copilot wrote was valid Python. The errors were all
+about my data: what a space after a comma does to this particular file, what
+`0.00` means here, which helper functions I had already written twenty lines up.
+It also sounds equally sure of itself either way, since the made-up explanation
+about "cells with text" is written in the same calm tone as the comment about
+revenue totals that was completely correct, so I cannot go by how confident it
+sounds. And the comment I write above the function matters more than I expected.
+It is closer to a set of instructions than a hint, and Copilot will not add
+anything I forget to put in it. Getting code out of Copilot was the fast part of
+this assignment. Checking it took most of the time.
